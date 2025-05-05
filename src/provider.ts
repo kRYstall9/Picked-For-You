@@ -12,7 +12,6 @@ function init() {
         const recommendationsPerPage = ctx.state<number>(6);
         const storageSettings = ctx.state<StorageSettings>({ numberOfRecommendations: 15, recommendationsProvider: "anilist", daysBeforeRefreshing: 1 });
         const selectedGenre = ctx.state<string | undefined>(undefined);
-        const filteredPickedForYou = ctx.state<PickedForYou[]>([]);
         const isFilterOpen = ctx.state<boolean>(false);
         //#endregion
 
@@ -106,7 +105,6 @@ function init() {
         });
 
         ctx.registerEventHandler(openFiltersDiv, () => {
-            currentPage.set(1);
             isFilterOpen.set((prev) => !prev);
         })
 
@@ -141,6 +139,7 @@ function init() {
         })
 
         filterByGenreRef.onValueChange((value) => {
+            currentPage.set(1);
             selectedGenre.set(value);
         });
 
@@ -416,7 +415,7 @@ function init() {
 
         function pagination(tray: $ui.Tray, itemsPerPage: number, genre?: string) {
 
-            const recommendations = (genre != null && genre != 'all') ? filteredPickedForYou.get() : pickedForYou.get();
+            const recommendations = (genre != null && genre != 'all') ? pickedForYou.get().filter(x=> x.genres.includes(genre)) : pickedForYou.get();
 
             const totalEpisodesWatched = recommendations.length;
             const totalPages = Math.floor(totalEpisodesWatched / itemsPerPage) + (totalEpisodesWatched % itemsPerPage > 0 ? 1 : 0);
@@ -583,7 +582,6 @@ function init() {
 
             if (genre != null && genre != 'all') {
                 const items = recommendations.filter(x => x.genres.includes(genre)).slice(minIndex, maxIndex);
-                filteredPickedForYou.set(items);
                 return items;
             }
 
@@ -645,7 +643,7 @@ function init() {
                                 intent: 'primary',
                                 className: `text-sm ${isSetup ? 'w-full' : 'w-1/2'}`,
                                 onClick: saveSettings,
-                                disabled: (storageSettings.get().numberOfRecommendations <= 0) || (storageSettings.get().daysBeforeRefreshing < 0)
+                                disabled: ((storageSettings.get().numberOfRecommendations ?? 0) <= 0) || ((storageSettings.get().daysBeforeRefreshing ?? 0) < 0)
                             }),
                             tray.button({
                                 label: 'Cancel',
