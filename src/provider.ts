@@ -41,7 +41,7 @@ function init() {
         //#endregion
 
         const tray = ctx.newTray({
-            iconUrl: '',
+            iconUrl: 'https://raw.githubusercontent.com/kRYstall9/Picked-For-You/refs/heads/main/src/icons/recommendedicon.png',
             withContent: true,
             width: '650px'
         });
