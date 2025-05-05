@@ -1,0 +1,20 @@
+{
+  "id": "picked-for-you",
+  "name": "Picked For You",
+  "version": "1.0.0",
+  "manifestURI": "",
+  "language": "typescript",
+  "type": "plugin",
+  "description": "The Picked For You plugin for Seanime shows anime recommendations based on your most-watched genres",
+  "author": "kRYstall9",
+  "icon": "",
+  "website": "",
+  "lang": "multi",
+  "payloadURI": "",
+  "plugin": {
+    "version": "1",
+    "permissions": {
+      "scopes": ["anilist", "database", "anilist-token", "storage"]
+    }
+  }
+}
