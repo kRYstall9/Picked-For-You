@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Made%20for-Seanime-00A1D1?style=flat&logo=seanime&logoColor=ffffff" alt="Made for Seanime" />
-  <img src="https://img.shields.io/badge/Version-1.0.0-brightgreen" alt="Version" />
+  <img src="https://img.shields.io/badge/Version-1.0.1-brightgreen" alt="Version" />
   <img src="https://img.shields.io/badge/License-MIT-blue" alt="License" />
 </p>
 
