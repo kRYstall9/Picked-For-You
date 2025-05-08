@@ -24,6 +24,7 @@ function init() {
         const defaultRecommendationsRefresh: number = 1;
         const defaultRecommendationsProvider: string = 'anilist';
         const numbersRegex = /\D.*$/gi;
+        const anilistSortOptions = ['SCORE_DESC', 'TRENDING_DESC', 'POPULARITY_DESC', 'ID_DESC', 'TITLE_ROMAJI', 'TITLE_ENGLISH', 'TITLE_NATIVE', 'TITLE_ENGLISH_DESC', 'TITLE_ROMAJI_DESC', 'TITLE_NATIVE_DESC', 'TRENDING', 'TRENDING_DESC'];
         //#endregion
 
         //#region Field References
@@ -88,7 +89,6 @@ function init() {
                     ctx.toast.success('Settings saved');
                     getPickedForYou();
                 }
-
                 tray.render(() => getFinalContainer());
                 tray.update();
             }
@@ -214,9 +214,10 @@ function init() {
                     .slice(0, 3)
                     .map(([genre, count]) => genre);
 
-                const query = `query Media($genreIn: [String], $perPage: Int, $sort: [MediaSort], $idNotIn: [Int]) {
-                                    Page(perPage: $perPage) {
-                                        media(genre_in: $genreIn, sort: $sort, id_not_in: $idNotIn, type: ANIME) {
+                const initialQuery = `query Page($perPage: Int, $idNotIn: [Int], $genreIn: [String], $sort: [MediaSort], $type: MediaType, $page: Int, $statusNotIn: [MediaStatus]) {
+                                    Page(perPage: $perPage, page: $page) {
+                                        media(id_not_in: $idNotIn, genre_in: $genreIn, sort: $sort, type: $type, status_not_in: $statusNotIn) {
+                                        id
                                         title {
                                             english
                                             romaji
@@ -224,32 +225,124 @@ function init() {
                                         coverImage {
                                             medium
                                         }
-                                        id
                                         genres
+                                        relations {
+                                            edges {
+                                            relationType
+                                            node {
+                                                id
+                                                type
+                                            }
+                                            }
+                                        }
                                         }
                                     }
                                 }`;
 
+                const secondQuery = `
+                                    query Page($perPage: Int, $genreIn: [String], $sort: [MediaSort], $type: MediaType, $idIn: [Int], $page: Int, $statusNotIn: [MediaStatus]) {
+                                        Page(perPage: $perPage, page: $page) {
+                                            media(genre_in: $genreIn, sort: $sort, type: $type, id_in: $idIn, status_not_in: $statusNotIn) {
+                                            id
+                                            title {
+                                                english
+                                                romaji
+                                            }
+                                            coverImage {
+                                                medium
+                                            }
+                                            genres
+                                            relations {
+                                                edges {
+                                                relationType
+                                                node {
+                                                    id
+                                                    type
+                                                    title {
+                                                    english
+                                                    romaji
+                                                    }
+                                                }
+                                                }
+                                            }
+                                            }
+                                        }
+                                    }`;
 
-                const variables = {
+                const anilistSort = getRandomSort();
+                createLogMessage('debug', 'getPickedForYou', `Sort: ${anilistSort}`);
+
+                let initialVariables = {
                     genreIn: top3,
                     perPage: storageSettings.get().numberOfRecommendations,
-                    sort: 'SCORE_DESC',
-                    idNotIn: completedOrWatchingAnimesIds
+                    sort: getRandomSort(),
+                    idNotIn: completedOrWatchingAnimesIds,
+                    type: 'ANIME',
+                    page: 1,
+                    statusNotIn: ["CANCELLED", "NOT_YET_RELEASED"]
                 };
 
-                const response = $anilist.customQuery({
-                    query: query,
-                    variables: variables,
+                let response = $anilist.customQuery({
+                    query: initialQuery,
+                    variables: initialVariables,
                 }, token);
 
-                for (let anime of response.Page.media) {
-                    animes.push({
-                        coverImage: anime.coverImage.medium ?? '',
-                        title: anime.title.english ?? anime.title.romaji,
-                        id: anime.id,
-                        genres: anime.genres
-                    });
+                while (true) {
+                    let prequels: number[] = [];
+                    let shouldStop = false;
+
+                    for (let anime of response.Page.media) {
+                        const prequel = anime.relations.edges.find((edge: any) => edge.relationType == 'PREQUEL' && edge.node.type == 'ANIME');
+                        if (prequel && !completedOrWatchingAnimesIds.includes(prequel.node.id)) {
+                            createLogMessage('debug', 'getPickedForYou', `Prequel found: ${prequel.node.id}`);
+                            prequels.push(prequel.node.id);
+                        }
+                        else {
+                            if (animes.length >= (storageSettings.get().numberOfRecommendations ?? 0)) {
+                                createLogMessage('debug', 'getPickedForYou', `Number of recommendations reached: ${storageSettings.get().numberOfRecommendations}`);
+                                shouldStop = true;
+                                break;
+                            }
+
+                            if (animes.find(x => x.id == anime.id) == null) {
+                                createLogMessage('debug', 'getPickedForYou', `Recommendation found: ${anime.id}`);
+                                animes.push({
+                                    coverImage: anime.coverImage.medium ?? '',
+                                    title: anime.title.english ?? anime.title.romaji,
+                                    id: anime.id,
+                                    genres: anime.genres
+                                });
+                            }
+                        }
+                    }
+
+                    if (shouldStop) {
+                        break;
+                    }
+
+                    if (prequels.length > 0) {
+                        let variables = {
+                            genreIn: top3,
+                            perPage: storageSettings.get().numberOfRecommendations,
+                            sort: 'SCORE_DESC',
+                            idIn: prequels,
+                            type: 'ANIME',
+                            statusNotIn: ["CANCELLED", "NOT_YET_RELEASED"]
+                        };
+
+                        response = $anilist.customQuery({
+                            query: secondQuery,
+                            variables: variables,
+                        }, token);
+
+                        continue;
+                    }
+
+                    initialVariables.page = initialVariables.page + 1;
+                    response = $anilist.customQuery({
+                        query: initialQuery,
+                        variables: initialVariables,
+                    }, token);
                 }
             }
             else {
@@ -730,6 +823,10 @@ function init() {
 
 
 
+        }
+
+        function getRandomSort(){
+            return anilistSortOptions[Math.floor(Math.random() * anilistSortOptions.length)];
         }
 
         function getFinalContainer() {
