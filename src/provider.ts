@@ -10,9 +10,10 @@ function init() {
         const pickedForYou = ctx.state<PickedForYou[]>([]);
         const currentPage = ctx.state<number>(1);
         const recommendationsPerPage = ctx.state<number>(6);
-        const storageSettings = ctx.state<StorageSettings>({ numberOfRecommendations: 15, recommendationsProvider: "anilist", daysBeforeRefreshing: 1 });
+        const storageSettings = ctx.state<StorageSettings>({ numberOfRecommendations: 15, recommendationsProvider: "anilist", daysBeforeRefreshing: 1, recommendationsOnTopRated: false });
         const selectedGenre = ctx.state<string | undefined>(undefined);
         const isFilterOpen = ctx.state<boolean>(false);
+        const isRecommendationsOnTopRatedActive = ctx.state<boolean>(false);
         //#endregion
 
         //#region Constants
@@ -24,6 +25,7 @@ function init() {
         const defaultRecommendationsRefresh: number = 1;
         const defaultRecommendationsProvider: string = 'anilist';
         const numbersRegex = /\D.*$/gi;
+        const anilistSortOptions = ['SCORE_DESC', 'TRENDING_DESC', 'POPULARITY_DESC', 'ID_DESC', 'TITLE_ROMAJI', 'TITLE_ENGLISH', 'TITLE_NATIVE', 'TITLE_ENGLISH_DESC', 'TITLE_ROMAJI_DESC', 'TITLE_NATIVE_DESC', 'TRENDING', 'TRENDING_DESC'];
         //#endregion
 
         //#region Field References
@@ -32,6 +34,7 @@ function init() {
         const recommendationsPerPageRef = ctx.fieldRef<string>();
         const recommendationsProviderRef = ctx.fieldRef<string>();
         const filterByGenreRef = ctx.fieldRef<string>();
+        const recommendationsTopRatedRef = ctx.fieldRef<boolean>();
         //#endregion
 
         //#region Storage Keys
@@ -66,7 +69,8 @@ function init() {
 
                 if (dbSettings?.daysBeforeRefreshing != days ||
                     dbSettings.numberOfRecommendations != settings.numberOfRecommendations ||
-                    dbSettings.recommendationsProvider != settings.recommendationsProvider
+                    dbSettings.recommendationsProvider != settings.recommendationsProvider ||
+                    dbSettings.recommendationsOnTopRated != settings.recommendationsOnTopRated
                 ) {
                     if (dbSettings?.daysBeforeRefreshing != days) {
                         const refreshingOn = addDays(new Date(), days);
@@ -88,7 +92,7 @@ function init() {
                     ctx.toast.success('Settings saved');
                     getPickedForYou();
                 }
-
+                currentPage.set(1);
                 tray.render(() => getFinalContainer());
                 tray.update();
             }
@@ -143,6 +147,11 @@ function init() {
             selectedGenre.set(value);
         });
 
+        recommendationsTopRatedRef.onValueChange((value) => {
+            isRecommendationsOnTopRatedActive.set(value);
+            storageSettings.set((prev) => ({ ...prev, recommendationsOnTopRated: value }));
+        });
+
         tray.onOpen(async () => {
             await getPickedForYou();
         })
@@ -188,35 +197,92 @@ function init() {
             if (chosenProvider == 'anilist') {
 
                 const userAnimes = $anilist.getAnimeCollection(false);
-                const completedOrWatchingAnimes = userAnimes.MediaListCollection?.lists?.filter(x => x.status == "COMPLETED" || x.status == "CURRENT").flatMap(x => x.entries) ?? [];
-                const completedOrWatchingAnimesIds = completedOrWatchingAnimes.map(x => x?.media?.id);
-                const watchedAnimes: any = {};
+                const completedAnimes = userAnimes.MediaListCollection?.lists?.filter(x => x.status == 'COMPLETED').flatMap(x => x.entries) ?? [];
+                const watchingAnimes = userAnimes.MediaListCollection?.lists?.filter(x => x.status == 'CURRENT').flatMap(x => x.entries) ?? [];
 
-                for (let completedAnime of completedOrWatchingAnimes) {
-                    const genres = completedAnime?.media?.genres;
-                    for (let genre of genres ?? []) {
-                        try {
-                            if (!(genre in watchedAnimes) || (Object.keys(watchedAnimes).length == 0)) {
-                                watchedAnimes[genre] = 1
-                            }
-                            else {
-                                watchedAnimes[genre] = watchedAnimes[genre] + 1;
-                            }
-                        }
-                        catch (error) {
-                            console.error(error);
+                if (isRecommendationsOnTopRatedActive.get()) {
+                    const topRatedAnime = getTopRatedAnime(completedAnimes);
+
+                    if(topRatedAnime == null) {
+                        createLogMessage('debug', 'getPickedForYou', 'No top rated anime found');
+                        return;
+                    }
+
+                    createLogMessage('debug', 'getPickedForYou', `Top rated anime: ${topRatedAnime.media?.title?.english ?? topRatedAnime.media?.title?.romaji}`);
+
+                    const recommendationsQuery = `query Page($recommendationsMediaId: Int) {
+                                                    Page {
+                                                        recommendations(mediaId: $recommendationsMediaId) {
+                                                        mediaRecommendation {
+                                                            title {
+                                                            english
+                                                            romaji
+                                                            }
+                                                            coverImage {
+                                                            medium
+                                                            }
+                                                            genres
+                                                            id
+                                                        }
+                                                        }
+                                                    }
+                                                }`;
+                    const recommendationsVariables = {
+                        recommendationsMediaId: topRatedAnime?.media?.id
+                    };
+
+                    const recommendationsResponse = $anilist.customQuery({
+                        query: recommendationsQuery,
+                        variables: recommendationsVariables
+                    }, token);
+
+                    createLogMessage('debug', 'getPickedForYou', `Found ${recommendationsResponse.Page.recommendations.length} recommendationos`);
+
+                    for (let recommendation of recommendationsResponse.Page.recommendations) {
+                        const anime = recommendation.mediaRecommendation;
+
+                        if (!completedAnimes.find(x => x?.media?.id == anime.id) && !watchingAnimes.find(x => x?.media?.id == anime.id)) {
+                            createLogMessage('debug', 'getPickedForYou', `Adding ${anime.title?.english ?? anime.title?.romaji} to recommendations`);
+                            animes.push({
+                                coverImage: anime.coverImage.medium ?? '',
+                                title: anime.title.english ?? anime.title.romaji,
+                                id: anime.id,
+                                genres: anime.genres
+                            });
                         }
                     }
                 }
+                else {
+                    const completedOrWatchingAnimes = [...completedAnimes, ...watchingAnimes];
+                    const completedOrWatchingAnimesIds = completedOrWatchingAnimes.map(x => x?.media?.id);
+                    const watchedAnimes: any = {};
 
-                const top3 = Object.entries(watchedAnimes)
-                    .sort((a: any, b: any) => b[1] - a[1])
-                    .slice(0, 3)
-                    .map(([genre, count]) => genre);
+                    for (let completedAnime of completedOrWatchingAnimes) {
+                        const genres = completedAnime?.media?.genres;
+                        for (let genre of genres ?? []) {
+                            try {
+                                if (!(genre in watchedAnimes) || (Object.keys(watchedAnimes).length == 0)) {
+                                    watchedAnimes[genre] = 1
+                                }
+                                else {
+                                    watchedAnimes[genre] = watchedAnimes[genre] + 1;
+                                }
+                            }
+                            catch (error) {
+                                console.error(error);
+                            }
+                        }
+                    }
 
-                const query = `query Media($genreIn: [String], $perPage: Int, $sort: [MediaSort], $idNotIn: [Int]) {
-                                    Page(perPage: $perPage) {
-                                        media(genre_in: $genreIn, sort: $sort, id_not_in: $idNotIn, type: ANIME) {
+                    const top3 = Object.entries(watchedAnimes)
+                        .sort((a: any, b: any) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([genre, count]) => genre);
+
+                    const initialQuery = `query Page($perPage: Int, $idNotIn: [Int], $genreIn: [String], $sort: [MediaSort], $type: MediaType, $page: Int, $statusNotIn: [MediaStatus]) {
+                                    Page(perPage: $perPage, page: $page) {
+                                        media(id_not_in: $idNotIn, genre_in: $genreIn, sort: $sort, type: $type, status_not_in: $statusNotIn) {
+                                        id
                                         title {
                                             english
                                             romaji
@@ -224,32 +290,125 @@ function init() {
                                         coverImage {
                                             medium
                                         }
-                                        id
                                         genres
+                                        relations {
+                                            edges {
+                                            relationType
+                                            node {
+                                                id
+                                                type
+                                            }
+                                            }
+                                        }
                                         }
                                     }
                                 }`;
 
+                    const secondQuery = `
+                                    query Page($perPage: Int, $genreIn: [String], $sort: [MediaSort], $type: MediaType, $idIn: [Int], $page: Int, $statusNotIn: [MediaStatus]) {
+                                        Page(perPage: $perPage, page: $page) {
+                                            media(genre_in: $genreIn, sort: $sort, type: $type, id_in: $idIn, status_not_in: $statusNotIn) {
+                                            id
+                                            title {
+                                                english
+                                                romaji
+                                            }
+                                            coverImage {
+                                                medium
+                                            }
+                                            genres
+                                            relations {
+                                                edges {
+                                                relationType
+                                                node {
+                                                    id
+                                                    type
+                                                    title {
+                                                    english
+                                                    romaji
+                                                    }
+                                                }
+                                                }
+                                            }
+                                            }
+                                        }
+                                    }`;
 
-                const variables = {
-                    genreIn: top3,
-                    perPage: storageSettings.get().numberOfRecommendations,
-                    sort: 'SCORE_DESC',
-                    idNotIn: completedOrWatchingAnimesIds
-                };
+                    const anilistSort = getRandomSort();
+                    createLogMessage('debug', 'getPickedForYou', `Sort: ${anilistSort}`);
 
-                const response = $anilist.customQuery({
-                    query: query,
-                    variables: variables,
-                }, token);
+                    let initialVariables = {
+                        genreIn: top3,
+                        perPage: storageSettings.get().numberOfRecommendations,
+                        sort: getRandomSort(),
+                        idNotIn: completedOrWatchingAnimesIds,
+                        type: 'ANIME',
+                        page: 1,
+                        statusNotIn: ["CANCELLED", "NOT_YET_RELEASED"]
+                    };
 
-                for (let anime of response.Page.media) {
-                    animes.push({
-                        coverImage: anime.coverImage.medium ?? '',
-                        title: anime.title.english ?? anime.title.romaji,
-                        id: anime.id,
-                        genres: anime.genres
-                    });
+                    let response = $anilist.customQuery({
+                        query: initialQuery,
+                        variables: initialVariables,
+                    }, token);
+
+                    while (true) {
+                        let prequels: number[] = [];
+                        let shouldStop = false;
+
+                        for (let anime of response.Page.media) {
+                            const prequel = anime.relations.edges.find((edge: any) => edge.relationType == 'PREQUEL' && edge.node.type == 'ANIME');
+                            if (prequel && !completedOrWatchingAnimesIds.includes(prequel.node.id)) {
+                                createLogMessage('debug', 'getPickedForYou', `Prequel found: ${prequel.node.id}`);
+                                prequels.push(prequel.node.id);
+                            }
+                            else {
+                                if (animes.length >= (storageSettings.get().numberOfRecommendations ?? 0)) {
+                                    createLogMessage('debug', 'getPickedForYou', `Number of recommendations reached: ${storageSettings.get().numberOfRecommendations}`);
+                                    shouldStop = true;
+                                    break;
+                                }
+
+                                if (animes.find(x => x.id == anime.id) == null) {
+                                    createLogMessage('debug', 'getPickedForYou', `Recommendation found: ${anime.id}`);
+                                    animes.push({
+                                        coverImage: anime.coverImage.medium ?? '',
+                                        title: anime.title.english ?? anime.title.romaji,
+                                        id: anime.id,
+                                        genres: anime.genres
+                                    });
+                                }
+                            }
+                        }
+
+                        if (shouldStop) {
+                            break;
+                        }
+
+                        if (prequels.length > 0) {
+                            let variables = {
+                                genreIn: top3,
+                                perPage: storageSettings.get().numberOfRecommendations,
+                                sort: 'SCORE_DESC',
+                                idIn: prequels,
+                                type: 'ANIME',
+                                statusNotIn: ["CANCELLED", "NOT_YET_RELEASED"]
+                            };
+
+                            response = $anilist.customQuery({
+                                query: secondQuery,
+                                variables: variables,
+                            }, token);
+
+                            continue;
+                        }
+
+                        initialVariables.page = initialVariables.page + 1;
+                        response = $anilist.customQuery({
+                            query: initialQuery,
+                            variables: initialVariables,
+                        }, token);
+                    }
                 }
             }
             else {
@@ -415,7 +574,7 @@ function init() {
 
         function pagination(tray: $ui.Tray, itemsPerPage: number, genre?: string) {
 
-            const recommendations = (genre != null && genre != 'all') ? pickedForYou.get().filter(x=> x.genres.includes(genre)) : pickedForYou.get();
+            const recommendations = (genre != null && genre != 'all') ? pickedForYou.get().filter(x => x.genres.includes(genre)) : pickedForYou.get();
 
             const totalEpisodesWatched = recommendations.length;
             const totalPages = Math.floor(totalEpisodesWatched / itemsPerPage) + (totalEpisodesWatched % itemsPerPage > 0 ? 1 : 0);
@@ -603,7 +762,7 @@ function init() {
                                         className: 'font-semibold',
                                         fieldRef: daysBeforeRefreshingRef
                                     }),
-                                    tray.text('Insert values >= 0', { className: 'text-xs', style: { 'display': `${(storageSettings.get().daysBeforeRefreshing == -1) ? 'block' : 'none'}`, 'color': 'red' } }),
+                                    tray.text('Insert values >= 0', { className: `text-xs ${(storageSettings.get().daysBeforeRefreshing == -1) ? 'block' : 'hidden'}`, style: { 'color': 'red' } }),
                                 ],
                                 className: 'flex flex-col items-start'
                             }),
@@ -612,21 +771,33 @@ function init() {
                                     tray.input({
                                         label: `Number of recommendations to show - (Default: ${defaultRecommendationsAmount})`,
                                         value: storageSettings.get().numberOfRecommendations?.toString(),
-                                        className: `font-semibold ${storageSettings.get().recommendationsProvider == 'sprout' ? 'hidden' : 'block'}`,
+                                        className: `font-semibold ${(storageSettings.get().recommendationsProvider == 'sprout' || isRecommendationsOnTopRatedActive.get()) ? 'hidden' : 'block'}`,
                                         fieldRef: numberOfRecommendationsRef
                                     }),
-                                    tray.text('Insert values >= 0', { className: 'text-xs', style: { 'display': `${(storageSettings.get().numberOfRecommendations == -1) ? 'block' : 'none'}`, 'color': 'red' } }),
+                                    tray.text('Insert values >= 0', { className: `text-xs ${(storageSettings.get().numberOfRecommendations == -1 && !isRecommendationsOnTopRatedActive.get()) ? 'block' : 'hidden'}`, style: { 'color': 'red' } }),
                                 ],
                                 className: 'flex flex-col items-start'
                             }),
                             tray.div({
                                 items: [
+                                    tray.switch({
+                                        label: 'Recommendations based on your top-rated anime',
+                                        fieldRef: recommendationsTopRatedRef,
+                                        size: 'sm'
+                                    })
+                                ]
+                            }),
+                            tray.div({
+                                items: [
                                     tray.select({
                                         label: `Recommendations Provider - (Default: ${defaultRecommendationsProvider})`,
-                                        options: [
+                                        options: !isRecommendationsOnTopRatedActive.get() ? [
                                             { label: 'anilist', value: 'anilist' },
                                             { label: 'sprout', value: 'sprout' },
-                                        ],
+                                        ] :
+                                            [
+                                                { label: 'anilist', value: 'anilist' }
+                                            ],
                                         fieldRef: recommendationsProviderRef,
                                         value: storageSettings.get().recommendationsProvider,
                                         className: 'font-semibold'
@@ -634,7 +805,7 @@ function init() {
                                 ]
                             })
                         ],
-                        className: 'flex flex-col mb-4 gap-4'
+                        className: 'flex flex-col mb-4 gap-2'
                     }),
                     tray.div({
                         items: [
@@ -648,9 +819,8 @@ function init() {
                             tray.button({
                                 label: 'Cancel',
                                 intent: 'primary-subtle',
-                                className: 'text-sm w-1/2',
+                                className: `text-sm w-1/2 ${isSetup ? 'hidden' : 'block'}`,
                                 onClick: cancelSettings,
-                                style: { 'display': `${isSetup ? 'none' : 'block'}` }
                             })
                         ],
                         className: 'flex gap-2'
@@ -732,6 +902,10 @@ function init() {
 
         }
 
+        function getRandomSort() {
+            return anilistSortOptions[Math.floor(Math.random() * anilistSortOptions.length)];
+        }
+
         function getFinalContainer() {
             const dbSettings = $storage.get(settingsStorageKey) || undefined;
             let finalItem: any;
@@ -764,6 +938,20 @@ function init() {
             return finalItem;
         }
 
+        function getTopRatedAnime(anime: ($app.AL_AnimeCollection_MediaListCollection_Lists_Entries | undefined)[]) {
+            const topRatedAnime = anime.reduce((prev, current) => {
+                if (
+                    prev == null ||
+                    (current != null && (typeof current.score === 'number' && typeof prev.score === 'number') && current.score > prev.score)
+                ) {
+                    return current;
+                }
+                return prev;
+            });
+
+            return topRatedAnime;
+        }
+
         //#endregion
 
         tray.render(() => getFinalContainer());
@@ -783,5 +971,6 @@ type StorageSettings = {
     numberOfRecommendations?: number | null;
     recommendationsProvider: "anilist" | "sprout";
     daysBeforeRefreshing: number;
-    nextRefresh?: Date | null
+    nextRefresh?: Date | null;
+    recommendationsOnTopRated: boolean;
 }
