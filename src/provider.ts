@@ -7,10 +7,11 @@ function init() {
 
     $ui.register((ctx) => {
         //#region States
+
         const pickedForYou = ctx.state<PickedForYou[]>([]);
         const currentPage = ctx.state<number>(1);
         const recommendationsPerPage = ctx.state<number>(6);
-        const storageSettings = ctx.state<StorageSettings>({ numberOfRecommendations: 15, recommendationsProvider: "anilist", daysBeforeRefreshing: 1, recommendationsOnTopRated: false });
+        const storageSettings = ctx.state<StorageSettings>({ numberOfRecommendations: 15, recommendationsProvider: "anilist", daysBeforeRefreshing: 1, recommendationsOnTopRated: false, userSortChoice: "RANDOM" });
         const selectedGenre = ctx.state<string | undefined>(undefined);
         const isFilterOpen = ctx.state<boolean>(false);
         const isRecommendationsOnTopRatedActive = ctx.state<boolean>(false);
@@ -25,7 +26,7 @@ function init() {
         const defaultRecommendationsRefresh: number = 1;
         const defaultRecommendationsProvider: string = 'anilist';
         const numbersRegex = /\D.*$/gi;
-        const anilistSortOptions = ['SCORE_DESC', 'TRENDING_DESC', 'POPULARITY_DESC', 'ID_DESC', 'TITLE_ROMAJI', 'TITLE_ENGLISH', 'TITLE_NATIVE', 'TITLE_ENGLISH_DESC', 'TITLE_ROMAJI_DESC', 'TITLE_NATIVE_DESC', 'TRENDING', 'TRENDING_DESC'];
+        const anilistSortOptions = ['SCORE', 'SCORE_DESC', 'POPULARITY', 'POPULARITY_DESC', 'EPISODES', 'EPISODES_DESC', 'DURATION', 'DURATION_DESC', 'TITLE_ROMAJI', 'TITLE_ROMAJI_DESC', 'TITLE_ENGLISH', 'TITLE_ENGLISH_DESC', 'TITLE_NATIVE', 'TITLE_NATIVE_DESC', 'TRENDING', 'TRENDING_DESC', 'RANDOM'];
         //#endregion
 
         //#region Field References
@@ -35,11 +36,11 @@ function init() {
         const recommendationsProviderRef = ctx.fieldRef<string>();
         const filterByGenreRef = ctx.fieldRef<string>();
         const recommendationsTopRatedRef = ctx.fieldRef<boolean>();
+        const sortingMethodRef = ctx.fieldRef<string>();
         //#endregion
 
         //#region Storage Keys
-        const settingsStorageKey = 'settings';
-        const recommendationsStorageKey = 'recommendations';
+        const pluginDataStorageKey = 'pickedForYouData';
         //#endregion
 
         const tray = ctx.newTray({
@@ -51,7 +52,7 @@ function init() {
         //#region Events
         ctx.registerEventHandler(settingsEvent, () => {
 
-            const settings = $storage.get(settingsStorageKey);
+            const settings = $storage.get(`${pluginDataStorageKey}.storageSettings`);
             storageSettings.set(settings);
 
             tray.render(() => {
@@ -63,14 +64,16 @@ function init() {
         ctx.registerEventHandler(saveSettings, () => {
 
             try {
-                const dbSettings = $storage.get<StorageSettings>(settingsStorageKey);
+                const dbSettings = $storage.get<StorageSettings>(`${pluginDataStorageKey}.storageSettings`);
                 const settings = storageSettings.get();
                 const days = settings.daysBeforeRefreshing;
+                let updatedRecommendations: PickedForYou[] = [];
 
                 if (dbSettings?.daysBeforeRefreshing != days ||
                     dbSettings.numberOfRecommendations != settings.numberOfRecommendations ||
                     dbSettings.recommendationsProvider != settings.recommendationsProvider ||
-                    dbSettings.recommendationsOnTopRated != settings.recommendationsOnTopRated
+                    dbSettings.recommendationsOnTopRated != settings.recommendationsOnTopRated ||
+                    dbSettings?.userSortChoice != settings?.userSortChoice
                 ) {
                     if (dbSettings?.daysBeforeRefreshing != days) {
                         const refreshingOn = addDays(new Date(), days);
@@ -81,14 +84,20 @@ function init() {
                         });
 
                         if (days != 0) {
-                            ctx.toast.info(`Recommendations will be cached until ${storageSettings.get().nextRefresh}`);
+                            ctx.toast.info(`Recommendations will be cached until ${refreshingOn}`);
+                            updatedRecommendations = pickedForYou.get() ?? [];
                         }
                         else {
-                            $storage.remove(recommendationsStorageKey);
+                            updatedRecommendations = [];
                         }
                     }
 
-                    $storage.set(settingsStorageKey, storageSettings.get());
+                    const updatedData: PluginData = {
+                        recommendations: updatedRecommendations,
+                        storageSettings: storageSettings.get()
+                    }
+
+                    $storage.set(pluginDataStorageKey, updatedData);
                     ctx.toast.success('Settings saved');
                     getPickedForYou();
                 }
@@ -152,6 +161,10 @@ function init() {
             storageSettings.set((prev) => ({ ...prev, recommendationsOnTopRated: value }));
         });
 
+        sortingMethodRef.onValueChange((value) => {
+            storageSettings.set((prev) => ({ ...prev, userSortChoice: value as UserSortChoice }));
+        });
+
         tray.onOpen(async () => {
             await getPickedForYou();
         })
@@ -161,8 +174,8 @@ function init() {
         //#region Functions
         async function getPickedForYou() {
 
-            const dbSettings = $storage.get(settingsStorageKey) || undefined;
-            const savedRecommendations = $storage.get(`${recommendationsStorageKey}.${storageSettings.get().recommendationsProvider}`) || [];
+            const dbSettings = $storage.get(`${pluginDataStorageKey}.storageSettings`) || undefined;
+            const savedRecommendations = $storage.get(`${pluginDataStorageKey}.recommendations`) || [];
 
             if (dbSettings != undefined) {
                 storageSettings.set(dbSettings);
@@ -181,13 +194,13 @@ function init() {
                 const difference = daysBetween(dateSaved, now);
 
                 if (difference < storageSettings.get().daysBeforeRefreshing) {
-                    const animes = $storage.get(`${recommendationsStorageKey}.${storageSettings.get().recommendationsProvider}`);
+                    const animes = $storage.get(`${pluginDataStorageKey}.recommendations`);
                     pickedForYou.set(animes);
                     return;
                 }
                 createLogMessage('debug', 'getPickedForYou', 'Refreshing');
                 storageSettings.set((prev) => ({ ...prev, nextRefresh: addDays(now, storageSettings.get().daysBeforeRefreshing) }));
-                $storage.set(settingsStorageKey, storageSettings.get());
+                $storage.set(`${pluginDataStorageKey}.storageSettings`, storageSettings.get());
             }
 
             const chosenProvider = storageSettings.get().recommendationsProvider;
@@ -203,7 +216,7 @@ function init() {
                 if (isRecommendationsOnTopRatedActive.get()) {
                     const topRatedAnime = getTopRatedAnime(completedAnimes);
 
-                    if(topRatedAnime == null) {
+                    if (topRatedAnime == null) {
                         createLogMessage('debug', 'getPickedForYou', 'No top rated anime found');
                         return;
                     }
@@ -334,13 +347,13 @@ function init() {
                                         }
                                     }`;
 
-                    const anilistSort = getRandomSort();
+                    const anilistSort = getSortMethod();
                     createLogMessage('debug', 'getPickedForYou', `Sort: ${anilistSort}`);
 
                     let initialVariables = {
                         genreIn: top3,
                         perPage: storageSettings.get().numberOfRecommendations,
-                        sort: getRandomSort(),
+                        sort: getSortMethod(),
                         idNotIn: completedOrWatchingAnimesIds,
                         type: 'ANIME',
                         page: 1,
@@ -439,17 +452,20 @@ function init() {
                     });
 
                     const malIds = sproutAnimes.map(x => x.id);
-                    const query = `query Media($perPage: Int, $idMalIn: [Int]) {
+                    const query = `query Media($perPage: Int, $idMalIn: [Int], $sort: [MediaSort]) {
                                     Page(perPage: $perPage) {
-                                        media(idMal_in: $idMalIn, type: ANIME) {
+                                        media(idMal_in: $idMalIn, type: ANIME, sort: $sort) {
                                         id
                                         idMal
                                         }
                                     }
                                 }`;
+
+                    const sortBy = getSortMethod();
                     const variables = {
                         idMalIn: malIds,
-                        perPage: sproutAnimes.length
+                        perPage: sproutAnimes.length,
+                        sort: sortBy
                     };
 
                     const anilistResponse = $anilist.customQuery({
@@ -468,7 +484,7 @@ function init() {
                     }
                 }
                 catch (error) {
-                    createLogMessage('error', 'getPickerForYou', error);
+                    createLogMessage('error', 'getPickedForYou', error);
                 }
             }
 
@@ -476,7 +492,7 @@ function init() {
 
             if (storageSettings.get().nextRefresh != null) {
                 createLogMessage('debug', 'getPickedForYou', 'Saving recommendations to the storage');
-                $storage.set(`${recommendationsStorageKey}.${storageSettings.get().recommendationsProvider}`, pickedForYou.get());
+                $storage.set(`${pluginDataStorageKey}.recommendations`, pickedForYou.get());
             }
         }
 
@@ -508,21 +524,20 @@ function init() {
                                             width: '100%',
                                             minHeight: '150px',
                                         },
-                                        className: 'relative cursor-pointer opacity-50'
+                                        className: 'relative cursor-pointer opacity-50 group-hover:scale-110 duration-300'
                                     }),
                                     tray.button({
                                         label: 'watch',
-                                        className: 'absolute inset-0 w-full h-full bg-transparent hover:bg-gray-500 z-10 transition-colors duration-300',
-                                        onClick: animeEvent
+                                        className: 'w-full h-full z-10 bg-transparent flex inset-0 items-center justify-center absolute opacity-0 group-hover:opacity-100 transition-opacity text-white px-3 py-1 rounded',
+                                        onClick: animeEvent,
                                     })
-
                                 ],
-                                className: 'relative'
+                                className: 'group flex p-2 border rounded-lg cursor-pointer'
                             }),
                             tray.text(anime.title, { className: 'text-sm font-semibold text-center line-clamp-2 break-normal' })
                         ],
                     })
-                );
+                )
             }
 
             return tray.div({
@@ -803,6 +818,17 @@ function init() {
                                         className: 'font-semibold'
                                     })
                                 ]
+                            }),
+                            tray.div({
+                                items: [
+                                    tray.select({
+                                        label: 'Sort recommendations by - (Default: RANDOM)',
+                                        options: Array.from(anilistSortOptions).map(x => ({ label: x, value: x })),
+                                        fieldRef: sortingMethodRef,
+                                        value: storageSettings.get().userSortChoice ?? 'RANDOM',
+                                        className: 'font-semibold'
+                                    })
+                                ]
                             })
                         ],
                         className: 'flex flex-col mb-4 gap-2'
@@ -902,12 +928,20 @@ function init() {
 
         }
 
-        function getRandomSort() {
-            return anilistSortOptions[Math.floor(Math.random() * anilistSortOptions.length)];
+        function getSortMethod() {
+
+            const sortUserChoice = storageSettings.get().userSortChoice;
+
+            if (sortUserChoice == "RANDOM" || sortUserChoice == undefined) {
+                const availableChoices = anilistSortOptions.filter(x => x != 'RANDOM');
+                return availableChoices[Math.floor(Math.random() * availableChoices.length)];
+            }
+
+            return sortUserChoice;
         }
 
         function getFinalContainer() {
-            const dbSettings = $storage.get(settingsStorageKey) || undefined;
+            const dbSettings = $storage.get(`${pluginDataStorageKey}.storageSettings`) || undefined;
             let finalItem: any;
 
             if (dbSettings == undefined || Object.keys(dbSettings).length === 0) {
@@ -967,10 +1001,18 @@ type PickedForYou = {
 
 type LogLevel = "error" | "warn" | "info" | "debug";
 
+type UserSortChoice = 'SCORE' | 'SCORE_DESC' | 'POPULARITY' | 'POPULARITY_DESC' | 'EPISODES' | 'EPISODES_DESC' | 'DURATION' | 'DURATION_DESC' | 'TITLE_ROMAJI' | 'TITLE_ROMAJI_DESC' | 'TITLE_ENGLISH' | 'TITLE_ENGLISH_DESC' | 'TITLE_NATIVE' | 'TITLE_NATIVE_DESC' | 'TRENDING' | 'TRENDING_DESC' | 'RANDOM';
+
 type StorageSettings = {
     numberOfRecommendations?: number | null;
     recommendationsProvider: "anilist" | "sprout";
     daysBeforeRefreshing: number;
     nextRefresh?: Date | null;
     recommendationsOnTopRated: boolean;
+    userSortChoice?: UserSortChoice;
+}
+
+type PluginData = {
+    storageSettings: StorageSettings;
+    recommendations: PickedForYou[];
 }
